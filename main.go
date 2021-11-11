@@ -147,18 +147,24 @@ func build(path string) Dwarfable {
 	const tgt = "/tmp/badlngenerics-test"
 	out, err := exec.Command("go", "build", "-o", tgt, "-gcflags=-N -l", path).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error compiling: %s", string(out))
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "error compiling %s: %s", path, string(out))
+		return nil
 	}
-	var f Dwarfable
-	f, _ = elf.Open(tgt)
-	if f == nil {
-		f, _ = macho.Open(tgt)
-		if f == nil {
-			f, _ = pe.Open(tgt)
+	f, _ := elf.Open(tgt)
+	if f != nil {	
+		return f
+	} else {
+		f, _ := macho.Open(tgt)
+		if f != nil {
+			return f
+		} else {
+			f, _ := pe.Open(tgt)
+			if f != nil {
+				return f
+			}
 		}
 	}
-	return f
+	return nil
 }
 
 func checkLines(dw *dwarf.Data, funcs map[string]*Func, funcRanges []FuncRange) {
