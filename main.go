@@ -1,19 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"debug/dwarf"
+	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"io"
 	"os"
 	"os/exec"
-	"debug/elf"
-	"go/token"
-	"go/parser"
-	"go/ast"
-	"go/printer"
-	"bytes"
-	"strings"
-	"debug/dwarf"
+	"path/filepath"
 	"sort"
-	"io"
+	"strings"
 )
 
 // if onlyStmt only check is_stmt instructions
@@ -26,35 +29,40 @@ func must(err error) {
 }
 
 type Func struct {
-	Name string
+	Name               string
 	startLine, endLine int
 }
 
 type FuncRange struct {
 	Rng [2]uint64
-	Fn *Func
+	Fn  *Func
+}
+
+type Dwarfable interface {
+	DWARF() (*dwarf.Data, error)
+	Close() error
 }
 
 func main() {
 	for _, arg := range os.Args[1:] {
-		fmt.Printf("%s\n", arg)
-		
+		//fmt.Printf("%s\n", arg)
+
 		funcs := make(map[string]*Func)
-		
+
 		getLineRanges(arg, funcs)
-		
+
 		file := build(arg)
 		if file == nil {
 			// couldn't build?
 			continue
 		}
-		
+
 		dw, err := file.DWARF()
 		must(err)
-		
+
 		funcRanges := getPCRanges(dw, funcs)
 		checkLines(dw, funcs, funcRanges)
-		
+
 		file.Close()
 	}
 }
@@ -75,11 +83,11 @@ func getLineRanges(path string, funcs map[string]*Func) {
 			if n.Recv != nil {
 				name = "(" + withoutTypeParams(exprToString(n.Recv.List[0].Type)) + ")." + name
 			}
-			funcs["main." + name] = &Func{ Name: "main." + name, startLine: s.Line, endLine: e.Line }
+			funcs["main."+name] = &Func{Name: "main." + name, startLine: s.Line, endLine: e.Line}
 			return false
 		default:
 			return true
-		// TODO: function literals
+			// TODO: function literals
 		}
 	})
 }
@@ -101,9 +109,9 @@ func withoutTypeParams(in string) string {
 
 func getPCRanges(dw *dwarf.Data, funcs map[string]*Func) []FuncRange {
 	r := []FuncRange{}
-	
+
 	rdr := dw.Reader()
-	
+
 	for {
 		e, err := rdr.Next()
 		if err != nil {
@@ -128,28 +136,34 @@ func getPCRanges(dw *dwarf.Data, funcs map[string]*Func) []FuncRange {
 		if fn == nil {
 			continue
 		}
-		r = append(r, FuncRange{ [2]uint64{ low, high }, fn })
+		r = append(r, FuncRange{[2]uint64{low, high}, fn})
 	}
 	sort.Slice(r, func(i, j int) bool { return r[i].Rng[0] < r[j].Rng[0] })
 	return r
-	
+
 }
 
-func build(path string) *elf.File {
+func build(path string) Dwarfable {
 	const tgt = "/tmp/badlngenerics-test"
 	out, err := exec.Command("go", "build", "-o", tgt, "-gcflags=-N -l", path).CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error compiling: %s", string(out))
 		os.Exit(1)
 	}
-	f, _ := elf.Open(tgt)
-	// error is ignored, it is usually 'bad magic number' which just means it isn't an executable
+	var f Dwarfable
+	f, _ = elf.Open(tgt)
+	if f == nil {
+		f, _ = macho.Open(tgt)
+		if f == nil {
+			f, _ = pe.Open(tgt)
+		}
+	}
 	return f
 }
 
 func checkLines(dw *dwarf.Data, funcs map[string]*Func, funcRanges []FuncRange) {
 	rdr := dw.Reader()
-	
+
 	for {
 		e, err := rdr.Next()
 		if err != nil {
@@ -162,7 +176,7 @@ func checkLines(dw *dwarf.Data, funcs map[string]*Func, funcRanges []FuncRange) 
 		if e.Tag != dwarf.TagCompileUnit {
 			continue
 		}
-		
+
 		lnrdr, err := dw.LineReader(e)
 		must(err)
 		var lne dwarf.LineEntry
@@ -180,7 +194,7 @@ func checkLines(dw *dwarf.Data, funcs map[string]*Func, funcRanges []FuncRange) 
 				continue
 			}
 			if lne.Line < fn.startLine || lne.Line > fn.endLine {
-				fmt.Printf("%s:%d %#x %s\n", lne.File.Name, lne.Line, lne.Address, fn.Name)
+				fmt.Printf("%s:%d %#x %s\n", filepath.Base(lne.File.Name), lne.Line, lne.Address, fn.Name)
 			}
 		}
 	}
