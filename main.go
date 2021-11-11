@@ -147,11 +147,11 @@ func build(path string) Dwarfable {
 	const tgt = "/tmp/badlngenerics-test"
 	out, err := exec.Command("go", "build", "-o", tgt, "-gcflags=-N -l", path).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error compiling %s: %s", path, string(out))
+		fmt.Printf("error compiling %s: %s", path, string(out))
 		return nil
 	}
 	f, _ := elf.Open(tgt)
-	if f != nil {	
+	if f != nil {
 		return f
 	} else {
 		f, _ := macho.Open(tgt)
